@@ -70,6 +70,13 @@ For example, nonreplicated disk could be created and attached with the following
 ./6-attach_disk.sh --disk-id nrd10 -d /dev/nbd1
 ```
 
+## Run QEMU with a vhost-user disk
+
+```bash
+./5-create_disk.sh -k ssd --disk-id qemu-vol
+./7-run_qemu.sh --diskid qemu-vol
+```
+
 ## Try to access your disk
 ```
 sudo dd oflag=direct if=/dev/urandom of=/dev/nbd0 count=5 bs=4096
