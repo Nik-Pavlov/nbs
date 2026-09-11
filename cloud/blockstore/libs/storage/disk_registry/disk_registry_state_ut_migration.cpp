@@ -1,6 +1,7 @@
 #include "disk_registry_state.h"
 
 #include "disk_registry_database.h"
+#include "disk_registry_schema.h"
 
 #include <cloud/blockstore/libs/diagnostics/critical_events_init.h>
 #include <cloud/blockstore/libs/storage/core/config.h>
@@ -18,6 +19,31 @@ namespace NCloud::NBlockStore::NStorage {
 using namespace NDiskRegistryStateTest;
 
 namespace {
+
+////////////////////////////////////////////////////////////////////////////////
+
+class TTableUpdateCounter final
+    : public NKikimr::NTable::ITableObserver
+{
+public:
+    size_t UpdateCount = 0;
+
+    void OnUpdate(
+        NKikimr::NTable::ERowOp,
+        TArrayRef<const NKikimr::TRawTypeValue>,
+        TArrayRef<const NKikimr::NTable::TUpdateOp>,
+        NKikimr::TRowVersion) override
+    {
+        ++UpdateCount;
+    }
+
+    void OnUpdateTx(
+        NKikimr::NTable::ERowOp,
+        TArrayRef<const NKikimr::TRawTypeValue>,
+        TArrayRef<const NKikimr::NTable::TUpdateOp>,
+        ui64) override
+    {}
+};
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -221,14 +247,12 @@ void DoTestMirroredMigrationDevice(
                 } else {
                     // The source stays allocated to the replica until the volume
                     // acknowledges reallocation.
-                    bool diskStateUpdated = false;
-                    UNIT_ASSERT_SUCCESS(state.FinishDeviceMigration(
+                    UNIT_ASSERT_SUCCESS(FinishDeviceMigration(
+                        state,
                         db,
                         replicaId,
                         sourceId,
-                        target.GetDeviceUUID(),
-                        Now(),
-                        &diskStateUpdated));
+                        target.GetDeviceUUID()));
                 }
             });
     }
@@ -612,17 +636,14 @@ Y_UNIT_TEST_SUITE(TDiskRegistryStateMigrationTest)
 
         // finish migration for foo:uuid-1.1 -> uuid-3.1
         executor.WriteTx([&] (TDiskRegistryDatabase db) mutable {
-            bool updated = false;
-            auto error = state.FinishDeviceMigration(
+            auto error = FinishDeviceMigration(
+                state,
                 db,
                 "foo",
                 "uuid-1.1",
-                "uuid-3.1",
-                TInstant::Now(),
-                &updated);
+                "uuid-3.1");
 
             UNIT_ASSERT_VALUES_EQUAL(S_OK, error.GetCode());
-            UNIT_ASSERT(!updated);
         });
 
         executor.WriteTx([&] (TDiskRegistryDatabase db) mutable {
@@ -662,6 +683,11 @@ Y_UNIT_TEST_SUITE(TDiskRegistryStateMigrationTest)
         executor.WriteTx([&] (TDiskRegistryDatabase db) {
             db.InitSchema();
         });
+
+        auto updateCounter = MakeIntrusive<TTableUpdateCounter>();
+        executor.DB.SetTableObserver(
+            TDiskRegistrySchema::Disks::TableId,
+            updateCounter);
 
         const TVector agents {
             AgentConfig(1, { Device("dev-1", "uuid-1.1", "rack-1") }),
@@ -708,17 +734,17 @@ Y_UNIT_TEST_SUITE(TDiskRegistryStateMigrationTest)
         });
 
         executor.WriteTx([&] (TDiskRegistryDatabase db) mutable {
-            bool updated = false;
-            auto error = state.FinishDeviceMigration(
+            updateCounter->UpdateCount = 0;
+
+            auto error = FinishDeviceMigration(
+                state,
                 db,
                 "foo",
                 "uuid-1.1",
-                "uuid-2.1",
-                TInstant::Now(),
-                &updated);
+                "uuid-2.1");
 
             UNIT_ASSERT_VALUES_EQUAL(S_OK, error.GetCode());
-            UNIT_ASSERT(updated);
+            UNIT_ASSERT_VALUES_EQUAL(1, updateCounter->UpdateCount);
         });
 
         UNIT_ASSERT(state.IsMigrationListEmpty());
@@ -1133,17 +1159,14 @@ Y_UNIT_TEST_SUITE(TDiskRegistryStateMigrationTest)
         UNIT_ASSERT_VALUES_EQUAL(affectedReplica, replicaId);
 
         executor.WriteTx([&] (TDiskRegistryDatabase db) mutable {
-            bool updated = false;
-            auto error = state.FinishDeviceMigration(
+            auto error = FinishDeviceMigration(
+                state,
                 db,
                 affectedReplica,
                 source1,
-                target1,
-                TInstant::Now(),
-                &updated);
+                target1);
 
             UNIT_ASSERT_VALUES_EQUAL(S_OK, error.GetCode());
-            UNIT_ASSERT(!updated);
         });
 
         state.PublishCounters(Now());
@@ -1239,17 +1262,14 @@ Y_UNIT_TEST_SUITE(TDiskRegistryStateMigrationTest)
         UNIT_ASSERT_VALUES_EQUAL(affectedReplica, replicaId);
 
         executor.WriteTx([&] (TDiskRegistryDatabase db) mutable {
-            bool updated = false;
-            auto error = state.FinishDeviceMigration(
+            auto error = FinishDeviceMigration(
+                state,
                 db,
                 affectedReplica,
                 source2,
-                target2,
-                TInstant::Now(),
-                &updated);
+                target2);
 
             UNIT_ASSERT_VALUES_EQUAL(S_OK, error.GetCode());
-            UNIT_ASSERT(updated);
 
             UNIT_ASSERT_VALUES_EQUAL(2, state.GetDiskStateUpdates().size());
             UNIT_ASSERT_VALUES_EQUAL(
@@ -1533,14 +1553,12 @@ Y_UNIT_TEST_SUITE(TDiskRegistryStateMigrationTest)
             TDiskInfo diskInfo;
             UNIT_ASSERT_SUCCESS(state.GetDiskInfo("disk-1", diskInfo));
             for (const auto& m: diskInfo.Migrations) {
-                bool updated = false;
-                UNIT_ASSERT_SUCCESS(state.FinishDeviceMigration(
+                UNIT_ASSERT_SUCCESS(FinishDeviceMigration(
+                    state,
                     db,
                     "disk-1",
                     m.GetSourceDeviceId(),
-                    m.GetTargetDevice().GetDeviceUUID(),
-                    Now(),
-                    &updated));
+                    m.GetTargetDevice().GetDeviceUUID()));
             }
         });
 
@@ -1663,14 +1681,12 @@ Y_UNIT_TEST_SUITE(TDiskRegistryStateMigrationTest)
                     const auto& uuid = migrations[i].SourceDeviceId;
                     const auto& target = targets[i];
 
-                    bool updated = false;
-                    auto error = state.FinishDeviceMigration(
+                    auto error = FinishDeviceMigration(
+                        state,
                         db,
                         diskId,
                         uuid,
-                        target,
-                        TInstant::Now(),
-                        &updated);
+                        target);
 
                     UNIT_ASSERT_VALUES_EQUAL(S_OK, error.GetCode());
                 }
@@ -2215,14 +2231,12 @@ Y_UNIT_TEST_SUITE(TDiskRegistryStateMigrationTest)
                 const auto& diskId = migration.DiskId;
                 const auto& uuid = migration.SourceDeviceId;
 
-                bool updated = false;
-                auto error = state.FinishDeviceMigration(
+                auto error = FinishDeviceMigration(
+                    state,
                     db,
                     diskId,
                     uuid,
-                    target,
-                    TInstant::Now(),
-                    &updated);
+                    target);
 
                 UNIT_ASSERT_VALUES_EQUAL(S_OK, error.GetCode());
             });

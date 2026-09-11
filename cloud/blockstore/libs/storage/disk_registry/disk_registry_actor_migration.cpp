@@ -5,6 +5,8 @@
 
 #include <cloud/storage/core/libs/common/format.h>
 
+#include <library/cpp/iterator/zip.h>
+
 namespace NCloud::NBlockStore::NStorage {
 
 using namespace NActors;
@@ -255,17 +257,15 @@ void TDiskRegistryActor::ExecuteFinishMigration(
     TTxDiskRegistry::TFinishMigration& args)
 {
     TDiskRegistryDatabase db(tx.DB);
-    for (auto& x: args.Migrations) {
-        bool updated = false;
-        auto error = State->FinishDeviceMigration(
-            db,
-            args.DiskId,
-            x.GetSourceDeviceId(),
-            x.GetTargetDeviceId(),
-            args.Timestamp,
-            &updated);
-        Y_UNUSED(updated);
+    auto errors = State->FinishDeviceMigrations(
+        db,
+        args.DiskId,
+        args.Migrations,
+        args.Timestamp);
 
+    Y_DEBUG_ABORT_UNLESS(
+        errors.size() == static_cast<size_t>(args.Migrations.size()));
+    for (const auto& [x, error]: Zip(args.Migrations, errors)) {
         if (HasError(error)) {
             LOG_ERROR(
                 ctx,

@@ -728,13 +728,12 @@ public:
         const TDeviceId& sourceDeviceId,
         const TDeviceId& targetDeviceId);
 
-    NProto::TError FinishDeviceMigration(
+    TVector<NProto::TError> FinishDeviceMigrations(
         TDiskRegistryDatabase& db,
         const TDiskId& diskId,
-        const TDeviceId& sourceId,
-        const TDeviceId& targetId,
-        TInstant timestamp,
-        bool* diskStateUpdated);
+        const google::protobuf::RepeatedPtrField<NProto::TDeviceMigrationIds>&
+            migrations,
+        TInstant timestamp);
 
     TDiskId FindReplicaByMigration(
         const TDiskId& masterDiskId,
@@ -1052,6 +1051,20 @@ private:
     bool TryUpdateDiskStateImpl(
         TDiskRegistryDatabase& db,
         const TString& diskId,
+        TDiskState& disk,
+        TInstant timestamp);
+
+    NProto::TError FinishDeviceMigrationImpl(
+        TDiskRegistryDatabase& db,
+        const TDiskId& diskId,
+        TDiskState& disk,
+        const TDeviceId& sourceId,
+        const TDeviceId& targetId,
+        TInstant timestamp);
+
+    bool PersistDeviceMigrationChanges(
+        TDiskRegistryDatabase& db,
+        const TDiskId& diskId,
         TDiskState& disk,
         TInstant timestamp);
 
